@@ -15,6 +15,10 @@ class BackendConfig:
     metrics_sampling_interval_sec: int
     metrics_retention_days: int
 
+    # Recommendations engine tuning
+    recs_default_ttl_days: int
+    recs_max_return: int
+
 
 def _read_mongo_uri_from_db_connection_file() -> Optional[str]:
     """
@@ -67,11 +71,19 @@ def load_config() -> BackendConfig:
     sampling_interval = int(os.getenv("METRICS_SAMPLING_INTERVAL_SEC", "5"))
     retention_days = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
 
+    recs_default_ttl_days = int(os.getenv("RECS_DEFAULT_TTL_DAYS", "14"))
+    recs_max_return = int(os.getenv("RECS_MAX_RETURN", "50"))
+
     sampling_interval = max(1, sampling_interval)
     retention_days = max(1, retention_days)
+
+    recs_default_ttl_days = max(1, recs_default_ttl_days)
+    recs_max_return = max(1, min(500, recs_max_return))
 
     return BackendConfig(
         mongo_uri=mongo_uri,
         metrics_sampling_interval_sec=sampling_interval,
         metrics_retention_days=retention_days,
+        recs_default_ttl_days=recs_default_ttl_days,
+        recs_max_return=recs_max_return,
     )

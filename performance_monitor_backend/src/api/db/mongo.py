@@ -91,6 +91,11 @@ class MongoManager:
         # instances unique by id for stable lookups
         cols.instances.create_index([("id", ASCENDING)], unique=True, name="idx_instances_id")
 
+        # recommendations indexes
+        cols.recommendations.create_index([("instanceId", ASCENDING)], name="idx_recs_instance")
+        cols.recommendations.create_index([("createdAt", DESCENDING)], name="idx_recs_createdAt_desc")
+        cols.recommendations.create_index([("status", ASCENDING)], name="idx_recs_status")
+
     def target_client(self, instance_id: str, uri: str) -> MongoClient:
         """Get (or create) a cached MongoClient for a monitored instance."""
         with self._lock:
