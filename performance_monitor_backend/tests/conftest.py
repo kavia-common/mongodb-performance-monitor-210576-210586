@@ -99,7 +99,7 @@ def _clean_perfmon_collections(mongo_db) -> None:
         mongo_db[name].delete_many({})
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def app(monkeypatch: pytest.MonkeyPatch, mongo_uri: str):
     """
     FastAPI app fixture with env vars configured for deterministic tests.
