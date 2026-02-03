@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Path, Request
 
 from src.api.schemas.metrics import MetricsSummary, TimeseriesRequest, TimeseriesResponse
 from src.api.services import metrics_service
@@ -15,9 +15,9 @@ router = APIRouter(prefix="/api/metrics", tags=["Metrics"])
     description="Fetch a snapshot summary of key metrics for an instance (stubbed sample data).",
     operation_id="get_metrics_summary",
 )
-def get_metrics_summary(instance_id: str = Path(..., description="Instance identifier")) -> MetricsSummary:
-    """Return a snapshot summary of key metrics for an instance (stub)."""
-    return metrics_service.get_summary(instance_id)
+def get_metrics_summary(request: Request, instance_id: str = Path(..., description="Instance identifier")) -> MetricsSummary:
+    """Return a snapshot summary of key metrics for an instance."""
+    return metrics_service.get_summary(request, instance_id)
 
 
 @router.post(
@@ -28,9 +28,10 @@ def get_metrics_summary(instance_id: str = Path(..., description="Instance ident
     operation_id="get_metrics_timeseries",
 )
 def get_metrics_timeseries(
+    request: Request,
     payload: TimeseriesRequest,
     instance_id: str = Path(..., description="Instance identifier"),
 ) -> TimeseriesResponse:
-    """Return timeseries points for charting (stub)."""
-    return metrics_service.get_timeseries(instance_id, payload)
+    """Return timeseries points for charting."""
+    return metrics_service.get_timeseries(request, instance_id, payload)
 

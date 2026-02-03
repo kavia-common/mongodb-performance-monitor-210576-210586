@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, HTTPException, Path, Request, status
 
 from src.api.schemas.common import ErrorResponse
 from src.api.schemas.instances import InstanceCreate, InstanceListResponse, InstanceOut, InstanceUpdate
@@ -16,9 +16,9 @@ router = APIRouter(prefix="/api/instances", tags=["Instances"])
     description="Return all configured MongoDB instances (stubbed in-memory).",
     operation_id="list_instances",
 )
-def list_instances() -> InstanceListResponse:
+def list_instances(request: Request) -> InstanceListResponse:
     """List all configured instances."""
-    items = instances_service.list_instances()
+    items = instances_service.list_instances(request)
     return InstanceListResponse(items=items, total=len(items))
 
 
@@ -31,13 +31,13 @@ def list_instances() -> InstanceListResponse:
     description="Create a new MongoDB instance configuration (stubbed in-memory).",
     operation_id="create_instance",
 )
-def create_instance(payload: InstanceCreate) -> InstanceOut:
+def create_instance(request: Request, payload: InstanceCreate) -> InstanceOut:
     """Create a new instance configuration."""
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="name must not be empty")
     if not payload.host.strip():
         raise HTTPException(status_code=400, detail="host must not be empty")
-    return instances_service.create_instance(payload)
+    return instances_service.create_instance(request, payload)
 
 
 @router.get(
@@ -48,9 +48,9 @@ def create_instance(payload: InstanceCreate) -> InstanceOut:
     description="Fetch a single instance by ID.",
     operation_id="get_instance",
 )
-def get_instance(instance_id: str = Path(..., description="Instance identifier")) -> InstanceOut:
+def get_instance(request: Request, instance_id: str = Path(..., description="Instance identifier")) -> InstanceOut:
     """Fetch a single instance by ID."""
-    inst = instances_service.get_instance(instance_id)
+    inst = instances_service.get_instance(request, instance_id)
     if not inst:
         raise HTTPException(status_code=404, detail="instance not found")
     return inst
@@ -65,11 +65,12 @@ def get_instance(instance_id: str = Path(..., description="Instance identifier")
     operation_id="update_instance",
 )
 def update_instance(
+    request: Request,
     payload: InstanceUpdate,
     instance_id: str = Path(..., description="Instance identifier"),
 ) -> InstanceOut:
     """Update an instance configuration."""
-    inst = instances_service.update_instance(instance_id, payload)
+    inst = instances_service.update_instance(request, instance_id, payload)
     if not inst:
         raise HTTPException(status_code=404, detail="instance not found")
     return inst
@@ -83,9 +84,9 @@ def update_instance(
     description="Delete an instance by ID.",
     operation_id="delete_instance",
 )
-def delete_instance(instance_id: str = Path(..., description="Instance identifier")) -> None:
+def delete_instance(request: Request, instance_id: str = Path(..., description="Instance identifier")) -> None:
     """Delete an instance configuration."""
-    ok = instances_service.delete_instance(instance_id)
+    ok = instances_service.delete_instance(request, instance_id)
     if not ok:
         raise HTTPException(status_code=404, detail="instance not found")
     return None
