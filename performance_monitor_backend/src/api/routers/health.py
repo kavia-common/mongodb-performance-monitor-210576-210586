@@ -31,6 +31,20 @@ class MongoConnectivityResponse(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict, description="Optional debug metadata.")
 
 
+class MetricsStorageDiagnosticsResponse(BaseModel):
+    """Diagnostics model describing metrics TTL/rollup configuration."""
+
+    raw_ttl_seconds: int = Field(..., description="TTL (seconds) applied to raw metrics_samples (0 means disabled).")
+    rollup_enabled: bool = Field(..., description="Whether background rollup/compaction is enabled.")
+    rollup_bucket_seconds: int = Field(..., description="Rollup bucket size (seconds).")
+    rollup_ttl_seconds: int = Field(..., description="TTL (seconds) applied to metrics_rollups (0 means disabled).")
+    rollup_compaction_interval_sec: int = Field(..., description="How often the rollup job runs (seconds).")
+    rollup_query_threshold_seconds: int = Field(
+        ..., description="Timeframe threshold (seconds) at/above which metrics queries prefer rollups."
+    )
+    timestamp: str = Field(..., description="UTC timestamp when the diagnostics were produced (ISO string).")
+
+
 @router.get(
     "/",
     response_model=HealthResponse,
@@ -67,3 +81,24 @@ def mongo_connectivity_check(request: Request) -> MongoConnectivityResponse:
         meta={},
     )
 
+
+@router.get(
+    "/api/health/metrics-storage",
+    response_model=MetricsStorageDiagnosticsResponse,
+    summary="Metrics storage diagnostics",
+    description="Reports raw TTL and rollup configuration (no secrets) for troubleshooting storage/retention behavior.",
+    operation_id="metrics_storage_diagnostics",
+)
+def metrics_storage_diagnostics(request: Request) -> MetricsStorageDiagnosticsResponse:
+    """Return metrics storage configuration diagnostics (TTL and rollup status)."""
+    state = get_state(request.app)
+    cfg = state.config
+    return MetricsStorageDiagnosticsResponse(
+        raw_ttl_seconds=int(cfg.metrics_raw_ttl_seconds),
+        rollup_enabled=bool(cfg.metrics_rollup_enabled),
+        rollup_bucket_seconds=int(cfg.metrics_rollup_bucket_seconds),
+        rollup_ttl_seconds=int(cfg.metrics_rollup_ttl_seconds),
+        rollup_compaction_interval_sec=int(cfg.metrics_rollup_compaction_interval_sec),
+        rollup_query_threshold_seconds=int(cfg.metrics_rollup_query_threshold_seconds),
+        timestamp=utc_now().isoformat(),
+    )

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.config import load_config
 from src.api.routers import alerts, health, instances, metrics, recommendations
 from src.api.services.alerts_evaluator import alerts_evaluator_loop
+from src.api.services.metrics_rollup import rollup_loop
 from src.api.services.metrics_sampler import sampler_loop
 from src.api.state import get_state, init_state
 
@@ -29,7 +30,7 @@ app = FastAPI(
     description=(
         "Backend API for the MongoDB performance monitoring app. "
         "This version stores configuration and collected samples in MongoDB (perfmon DB) "
-        "and runs a background sampler that polls serverStatus for active instances."
+        "and runs background loops for sampling, alerts evaluation, and optional rollups/compaction."
     ),
     version="0.3.0",
     openapi_tags=openapi_tags,
@@ -52,7 +53,11 @@ async def _on_startup() -> None:
             "Verify mongodb_instance/db_connection.txt (preferred) or BACKEND_MONGO_URI."
         )
 
-    state.mongo.init_indexes()
+    # Initialize indexes with TTLs driven by env config.
+    state.mongo.init_indexes(
+        raw_ttl_seconds=int(state.config.metrics_raw_ttl_seconds),
+        rollup_ttl_seconds=int(state.config.metrics_rollup_ttl_seconds),
+    )
 
     app.state._sampler_shutdown = asyncio.Event()
     state.sampler_task = asyncio.create_task(sampler_loop(state, app.state._sampler_shutdown))
@@ -60,10 +65,14 @@ async def _on_startup() -> None:
     app.state._alerts_shutdown = asyncio.Event()
     state.alerts_task = asyncio.create_task(alerts_evaluator_loop(state, app.state._alerts_shutdown))
 
+    # Optional rollups/compaction task
+    app.state._rollup_shutdown = asyncio.Event()
+    state.rollup_task = asyncio.create_task(rollup_loop(state, app.state._rollup_shutdown))
+
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    """Shutdown hook: stop sampler/evaluator and close Mongo connections."""
+    """Shutdown hook: stop sampler/evaluator/rollups and close Mongo connections."""
     state = get_state(app)
 
     sampler_shutdown = getattr(app.state, "_sampler_shutdown", None)
@@ -85,6 +94,16 @@ async def _on_shutdown() -> None:
             await asyncio.wait_for(alerts_task, timeout=5.0)
         except Exception:
             logger.exception("Error stopping alerts evaluator task")
+
+    rollup_shutdown = getattr(app.state, "_rollup_shutdown", None)
+    if rollup_shutdown is not None:
+        rollup_shutdown.set()
+    rollup_task = getattr(state, "rollup_task", None)
+    if rollup_task is not None:
+        try:
+            await asyncio.wait_for(rollup_task, timeout=5.0)
+        except Exception:
+            logger.exception("Error stopping rollup task")
 
     state.mongo.close()
 
@@ -127,4 +146,3 @@ app.include_router(instances.router)
 app.include_router(metrics.router)
 app.include_router(alerts.router)
 app.include_router(recommendations.router)
-

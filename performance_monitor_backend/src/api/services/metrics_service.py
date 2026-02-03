@@ -124,9 +124,6 @@ def get_summary(request: Request, instance_id: str) -> MetricsSummary:
         cpu_pct = 0.0
         as_of = now
 
-        # If mem.resident is in MB already (mongod reports MB), use as-is.
-        # If missing, keep 0.
-
         _ = opcounters  # reserved for later enhancements
 
     return MetricsSummary(
@@ -159,14 +156,52 @@ def _metric_from_sample(sample: dict, metric: str) -> float:
     return 0.0
 
 
+def _should_use_rollups(request: Request, start: datetime, end: datetime) -> bool:
+    """
+    Decide whether to read rollups instead of raw samples.
+
+    Keeps API schemas unchanged; only affects storage/query behavior.
+    """
+    state = get_state(request.app)
+    if not state.config.metrics_rollup_enabled:
+        return False
+    span = max(0.0, (end - start).total_seconds())
+    return span >= float(state.config.metrics_rollup_query_threshold_seconds)
+
+
+def _get_timeseries_from_rollups(request: Request, instance_id: str, req: TimeseriesRequest) -> TimeseriesResponse:
+    """
+    Fetch timeseries points from metrics_rollups.
+
+    Rollups store one doc per (instanceId, bucket, metric) with `value` already averaged.
+    """
+    start, end = _compute_range(req)
+    cols = get_state(request.app).mongo.collections()
+
+    docs = list(
+        cols.metrics_rollups.find(
+            {"instanceId": instance_id, "metric": req.metric, "bucket": {"$gte": start, "$lte": end}},
+            projection={"_id": 0, "bucket": 1, "value": 1},
+        ).sort("bucket", 1)
+    )
+
+    points = [MetricValue(ts=d["bucket"], value=float(d.get("value") or 0.0)) for d in docs if d.get("bucket")]
+    return TimeseriesResponse(instance_id=instance_id, metric=req.metric, points=points, unit=_unit_for(req.metric))
+
+
 # PUBLIC_INTERFACE
 def get_timeseries(request: Request, instance_id: str, req: TimeseriesRequest) -> TimeseriesResponse:
     """
-    Return timeseries points for charting from persisted metrics_samples.
+    Return timeseries points for charting from persisted metrics_samples (raw) or metrics_rollups.
 
-    For now, we fetch raw samples in [start,end] and optionally bucket them by averaging within each bucket.
+    Behavior:
+    - For short timeframes: query raw samples and bucket client-requested step_seconds.
+    - For long timeframes (and when rollups enabled): query pre-aggregated rollups.
     """
     start, end = _compute_range(req)
+    if _should_use_rollups(request, start, end):
+        return _get_timeseries_from_rollups(request, instance_id, req)
+
     cols = get_state(request.app).mongo.collections()
 
     # Pull samples ascending by ts for stable bucketing

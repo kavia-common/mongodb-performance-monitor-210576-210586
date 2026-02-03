@@ -22,6 +22,7 @@ class MongoCollections:
 
     instances: Collection
     metrics_samples: Collection
+    metrics_rollups: Collection
 
     # Legacy/stub collection used by earlier UI wiring (kept intact).
     alerts: Collection
@@ -106,29 +107,63 @@ class MongoManager:
         return MongoCollections(
             instances=db["instances"],
             metrics_samples=db["metrics_samples"],
+            metrics_rollups=db["metrics_rollups"],
             alerts=db["alerts"],
             alert_rules=db["alert_rules"],
             alert_events=db["alert_events"],
             recommendations=db["recommendations"],
         )
 
-    def init_indexes(self) -> None:
-        """Create minimal required indexes (idempotent)."""
+    def init_indexes(self, *, raw_ttl_seconds: int = 0, rollup_ttl_seconds: int = 0) -> None:
+        """
+        Create required indexes (idempotent).
+
+        TTL behavior:
+        - raw_ttl_seconds == 0 disables TTL index creation on metrics_samples.ts
+        - rollup_ttl_seconds == 0 disables TTL index creation on metrics_rollups.bucket
+
+        Note: MongoDB TTL cleanup is performed by MongoDB's internal TTL monitor and is not immediate.
+        """
         cols = self.collections()
-        # metrics_samples on {instanceId:1, ts:-1}
+
+        # ---- Metrics samples (raw) ----
+        # Common query: instance + time range.
         cols.metrics_samples.create_index([("instanceId", ASCENDING), ("ts", DESCENDING)], name="idx_instance_ts")
-        # alerts on {instanceId:1, ts:-1} (legacy)
+
+        # TTL index: on ts (Date). Must be single-field index.
+        if int(raw_ttl_seconds) > 0:
+            cols.metrics_samples.create_index(
+                [("ts", ASCENDING)],
+                name="ttl_metrics_samples_ts",
+                expireAfterSeconds=int(raw_ttl_seconds),
+            )
+
+        # ---- Metrics rollups ----
+        # Common query: instance + bucket range.
+        cols.metrics_rollups.create_index([("instanceId", ASCENDING), ("bucket", DESCENDING)], name="idx_rollups_instance_bucket")
+        # Optional helpful index for per-metric rollup scans/aggregations.
+        cols.metrics_rollups.create_index([("instanceId", ASCENDING), ("metric", ASCENDING), ("bucket", DESCENDING)], name="idx_rollups_instance_metric_bucket")
+
+        if int(rollup_ttl_seconds) > 0:
+            cols.metrics_rollups.create_index(
+                [("bucket", ASCENDING)],
+                name="ttl_metrics_rollups_bucket",
+                expireAfterSeconds=int(rollup_ttl_seconds),
+            )
+
+        # ---- Legacy alerts collection ----
         cols.alerts.create_index([("instanceId", ASCENDING), ("ts", DESCENDING)], name="idx_alerts_instance_ts")
-        # instances unique by id for stable lookups
+
+        # ---- Instances ----
         cols.instances.create_index([("id", ASCENDING)], unique=True, name="idx_instances_id")
 
-        # Alert rules indexes
+        # ---- Alert rules ----
         cols.alert_rules.create_index([("enabled", ASCENDING)], name="idx_alert_rules_enabled")
         cols.alert_rules.create_index([("type", ASCENDING)], name="idx_alert_rules_type")
         cols.alert_rules.create_index([("instanceScope", ASCENDING)], name="idx_alert_rules_instanceScope")
         cols.alert_rules.create_index([("createdAt", DESCENDING)], name="idx_alert_rules_createdAt_desc")
 
-        # Alert events indexes (per requirement)
+        # ---- Alert events ----
         cols.alert_events.create_index([("instanceId", ASCENDING)], name="idx_alert_events_instance")
         cols.alert_events.create_index([("ruleId", ASCENDING)], name="idx_alert_events_rule")
         cols.alert_events.create_index([("status", ASCENDING)], name="idx_alert_events_status")
@@ -138,7 +173,7 @@ class MongoManager:
             name="idx_alert_events_instance_rule_createdAt_desc",
         )
 
-        # recommendations indexes
+        # ---- Recommendations ----
         cols.recommendations.create_index([("instanceId", ASCENDING)], name="idx_recs_instance")
         cols.recommendations.create_index([("createdAt", DESCENDING)], name="idx_recs_createdAt_desc")
         cols.recommendations.create_index([("status", ASCENDING)], name="idx_recs_status")

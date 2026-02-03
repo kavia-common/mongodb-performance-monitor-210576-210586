@@ -10,6 +10,32 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Parse an int env var with a default."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return int(default)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse a bool env var (true/false/1/0/yes/no/on/off)."""
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    val = raw.strip().lower()
+    if val in ("1", "true", "yes", "y", "on"):
+        return True
+    if val in ("0", "false", "no", "n", "off"):
+        return False
+    return bool(default)
+
+
+def _clamp_int(v: int, lo: int, hi: int) -> int:
+    """Clamp integer to [lo, hi]."""
+    return max(lo, min(hi, int(v)))
+
+
 @dataclass(frozen=True)
 class BackendConfig:
     """Runtime configuration loaded from env and optional workspace files."""
@@ -17,6 +43,18 @@ class BackendConfig:
     mongo_uri: str
     metrics_sampling_interval_sec: int
     metrics_retention_days: int
+
+    # Raw metrics TTL (Mongo TTL index on metrics_samples.ts).
+    metrics_raw_ttl_seconds: int
+
+    # Rollup/compaction controls.
+    metrics_rollup_enabled: bool
+    metrics_rollup_bucket_seconds: int
+    metrics_rollup_ttl_seconds: int
+    metrics_rollup_compaction_interval_sec: int
+
+    # Threshold to switch reads to rollups for large timeframes (keeps API contract unchanged).
+    metrics_rollup_query_threshold_seconds: int
 
     # Alerts engine tuning
     alert_eval_interval_sec: int
@@ -118,17 +156,39 @@ def load_config() -> BackendConfig:
         _sanitize_mongo_uri_for_logs(mongo_uri),
     )
 
-    sampling_interval = int(os.getenv("METRICS_SAMPLING_INTERVAL_SEC", "5"))
-    retention_days = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
+    sampling_interval = _env_int("METRICS_SAMPLING_INTERVAL_SEC", 5)
+    retention_days = _env_int("METRICS_RETENTION_DAYS", 7)
 
-    alert_eval_interval = int(os.getenv("ALERT_EVAL_INTERVAL_SEC", "5"))
-    alert_event_cooldown = int(os.getenv("ALERT_EVENT_COOLDOWN_SEC", "60"))
+    # Raw TTL defaults to 7 days unless overridden; 0 disables TTL index.
+    metrics_raw_ttl_seconds = _env_int("METRICS_RAW_TTL_SECONDS", 7 * 24 * 3600)
 
-    recs_default_ttl_days = int(os.getenv("RECS_DEFAULT_TTL_DAYS", "14"))
-    recs_max_return = int(os.getenv("RECS_MAX_RETURN", "50"))
+    metrics_rollup_enabled = _env_bool("METRICS_ROLLUP_ENABLED", False)
+    metrics_rollup_bucket_seconds = _env_int("METRICS_ROLLUP_BUCKET_SECONDS", 60)
+    metrics_rollup_ttl_seconds = _env_int("METRICS_ROLLUP_TTL_SECONDS", 30 * 24 * 3600)
+    metrics_rollup_compaction_interval_sec = _env_int("METRICS_ROLLUP_COMPACTION_INTERVAL_SEC", 30)
+
+    # If timeframe >= threshold, prefer rollups (when enabled).
+    metrics_rollup_query_threshold_seconds = _env_int("METRICS_ROLLUP_QUERY_THRESHOLD_SECONDS", 6 * 3600)
+
+    alert_eval_interval = _env_int("ALERT_EVAL_INTERVAL_SEC", 5)
+    alert_event_cooldown = _env_int("ALERT_EVENT_COOLDOWN_SEC", 60)
+
+    recs_default_ttl_days = _env_int("RECS_DEFAULT_TTL_DAYS", 14)
+    recs_max_return = _env_int("RECS_MAX_RETURN", 50)
 
     sampling_interval = max(1, sampling_interval)
     retention_days = max(1, retention_days)
+
+    # TTL seconds: allow 0 to mean "disabled"; otherwise enforce sane bounds.
+    if metrics_raw_ttl_seconds != 0:
+        metrics_raw_ttl_seconds = _clamp_int(metrics_raw_ttl_seconds, 60, 365 * 24 * 3600)
+
+    # Rollups
+    metrics_rollup_bucket_seconds = _clamp_int(metrics_rollup_bucket_seconds, 10, 3600)
+    if metrics_rollup_ttl_seconds != 0:
+        metrics_rollup_ttl_seconds = _clamp_int(metrics_rollup_ttl_seconds, metrics_rollup_bucket_seconds, 3650 * 24 * 3600)
+    metrics_rollup_compaction_interval_sec = _clamp_int(metrics_rollup_compaction_interval_sec, 5, 3600)
+    metrics_rollup_query_threshold_seconds = _clamp_int(metrics_rollup_query_threshold_seconds, 60, 365 * 24 * 3600)
 
     # Alerts: keep evaluation reasonably frequent, cooldown not too small.
     alert_eval_interval = max(1, alert_eval_interval)
@@ -141,6 +201,12 @@ def load_config() -> BackendConfig:
         mongo_uri=mongo_uri,
         metrics_sampling_interval_sec=sampling_interval,
         metrics_retention_days=retention_days,
+        metrics_raw_ttl_seconds=metrics_raw_ttl_seconds,
+        metrics_rollup_enabled=metrics_rollup_enabled,
+        metrics_rollup_bucket_seconds=metrics_rollup_bucket_seconds,
+        metrics_rollup_ttl_seconds=metrics_rollup_ttl_seconds,
+        metrics_rollup_compaction_interval_sec=metrics_rollup_compaction_interval_sec,
+        metrics_rollup_query_threshold_seconds=metrics_rollup_query_threshold_seconds,
         alert_eval_interval_sec=alert_eval_interval,
         alert_event_cooldown_sec=alert_event_cooldown,
         recs_default_ttl_days=recs_default_ttl_days,

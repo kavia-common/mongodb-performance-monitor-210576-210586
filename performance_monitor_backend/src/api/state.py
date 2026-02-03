@@ -17,6 +17,7 @@ class AppState:
     mongo: MongoManager
     sampler_task: Optional[object] = None  # asyncio.Task, but kept loose to avoid import cycles
     alerts_task: Optional[object] = None  # asyncio.Task, but kept loose to avoid import cycles
+    rollup_task: Optional[object] = None  # asyncio.Task for metrics rollup loop
 
 
 # PUBLIC_INTERFACE
