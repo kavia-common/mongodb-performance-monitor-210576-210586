@@ -41,9 +41,17 @@ init_state(app, load_config())
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    """Startup hook: connect to Mongo, ensure indexes, and start background sampler + alerts evaluator."""
+    """Startup hook: connect to Mongo, validate connectivity, ensure indexes, and start background loops."""
     state = get_state(app)
+
+    # Connect + verify early so misconfigured Mongo doesn't silently break background tasks.
     state.mongo.connect_app()
+    if not state.mongo.ping():
+        raise RuntimeError(
+            "Mongo connectivity check failed during startup. "
+            "Verify mongodb_instance/db_connection.txt (preferred) or BACKEND_MONGO_URI."
+        )
+
     state.mongo.init_indexes()
 
     app.state._sampler_shutdown = asyncio.Event()
@@ -80,12 +88,31 @@ async def _on_shutdown() -> None:
 
     state.mongo.close()
 
-# CORS: allow local frontend by default, plus any explicit frontend URL provided via env.
-# Env var list provided for this container includes REACT_APP_FRONTEND_URL.
+
+def _env_frontend_url() -> str | None:
+    # Support both:
+    # - standardized: FRONTEND_URL
+    # - legacy (already used in this project/container env list): REACT_APP_FRONTEND_URL
+    return os.getenv("FRONTEND_URL") or os.getenv("REACT_APP_FRONTEND_URL")
+
+
+def _env_cors_extra_origins() -> List[str]:
+    # Comma-separated list for preview deployments, etc.
+    raw = os.getenv("CORS_ALLOW_ORIGINS") or ""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return parts
+
+
+# CORS: allow local frontend by default, plus explicit frontend URL and optional extra origins.
 allowed_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
-frontend_url = os.getenv("REACT_APP_FRONTEND_URL")
+frontend_url = _env_frontend_url()
 if frontend_url:
     allowed_origins.append(frontend_url)
+allowed_origins.extend(_env_cors_extra_origins())
+
+# De-dupe while preserving order
+_seen = set()
+allowed_origins = [o for o in allowed_origins if not (o in _seen or _seen.add(o))]
 
 app.add_middleware(
     CORSMiddleware,

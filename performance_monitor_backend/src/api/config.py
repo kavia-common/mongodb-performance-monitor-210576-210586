@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -23,54 +26,97 @@ class BackendConfig:
     recs_default_ttl_days: int
     recs_max_return: int
 
+    # Diagnostics: how mongo_uri was resolved
+    mongo_uri_source: str
+    mongo_db_connection_path: Optional[str]
 
-def _read_mongo_uri_from_db_connection_file() -> Optional[str]:
+
+def _db_connection_candidate_path() -> Path:
     """
-    Attempt to read a MongoDB URI from the mongodb_instance container's db_connection.txt.
+    Return the expected absolute path to mongodb_instance/db_connection.txt.
+
+    Note: backend and mongodb_instance are sibling workspaces under the same repo root.
+    """
+    # repo_root/.../performance_monitor_backend/src/api/config.py -> repo_root
+    repo_root = Path(__file__).resolve().parents[4]
+    return repo_root / "mongodb-performance-monitor-210576-210587" / "mongodb_instance" / "db_connection.txt"
+
+
+def _parse_mongo_uri_from_db_connection_text(text: str) -> Optional[str]:
+    """
+    Parse a MongoDB URI from db_connection.txt contents.
 
     Expected format (per platform convention):
       - 'mongosh mongodb://...'
       - or a raw 'mongodb://...' URI on the first line
+      - or any line containing mongodb://... (we extract first match)
     """
-    # The backend and mongodb_instance are sibling workspaces under the same base directory.
-    # Using an absolute-ish relative walk from this file keeps it robust to cwd.
-    # repo_root/.../performance_monitor_backend/src/api/config.py -> repo_root
-    repo_root = Path(__file__).resolve().parents[4]
-
-    candidate = repo_root / "mongodb-performance-monitor-210576-210587" / "mongodb_instance" / "db_connection.txt"
-    if not candidate.exists():
-        return None
-
-    try:
-        first_line = candidate.read_text(encoding="utf-8").splitlines()[0].strip()
-    except Exception:
-        return None
-
+    first_line = (text.splitlines()[0] if text else "").strip()
     if not first_line:
         return None
 
-    # If line starts with "mongosh ", extract the following URI
     if first_line.startswith("mongosh "):
         maybe_uri = first_line[len("mongosh ") :].strip()
         return maybe_uri or None
 
-    # Otherwise, search for a mongodb URI within the line.
     m = re.search(r"(mongodb(?:\+srv)?://\S+)", first_line)
     return m.group(1) if m else None
 
 
+def _read_mongo_uri_from_db_connection_file() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Attempt to read a MongoDB URI from mongodb_instance/db_connection.txt.
+
+    Returns:
+      (uri, path_str) where path_str is included only when the file existed/read was attempted.
+    """
+    candidate = _db_connection_candidate_path()
+    if not candidate.exists():
+        return None, None
+
+    try:
+        raw = candidate.read_text(encoding="utf-8")
+        uri = _parse_mongo_uri_from_db_connection_text(raw)
+        return uri, str(candidate)
+    except Exception:
+        # If the file exists but can't be read/parsed, we still return the path for diagnostics.
+        logger.exception("Failed reading/parsing mongodb db_connection.txt at %s", str(candidate))
+        return None, str(candidate)
+
+
+def _sanitize_mongo_uri_for_logs(uri: str) -> str:
+    """Mask credentials in mongo URIs to avoid leaking secrets in logs."""
+    # mongodb://user:pass@host -> mongodb://user:***@host
+    return re.sub(r"(mongodb(?:\+srv)?://)([^:@/]+):([^@/]+)@", r"\1\2:***@", uri)
+
+
 # PUBLIC_INTERFACE
 def load_config() -> BackendConfig:
-    """Load BackendConfig from db_connection.txt (if available) and env vars."""
-    file_uri = _read_mongo_uri_from_db_connection_file()
+    """Load BackendConfig from db_connection.txt (preferred) and env vars (fallback)."""
+    file_uri, file_path = _read_mongo_uri_from_db_connection_file()
     env_uri = os.getenv("BACKEND_MONGO_URI")
 
+    mongo_uri_source = "mongodb_instance/db_connection.txt" if file_uri else ("BACKEND_MONGO_URI" if env_uri else "unset")
     mongo_uri = file_uri or env_uri
+
     if not mongo_uri:
         # Keep failure explicit and actionable; startup will log the exception.
         raise RuntimeError(
             "Mongo URI not configured. Provide BACKEND_MONGO_URI or ensure mongodb_instance/db_connection.txt is readable."
         )
+
+    # Basic validation: pymongo will do deep validation on connect, but catch common misconfig early.
+    if not re.match(r"^mongodb(\+srv)?://", mongo_uri):
+        raise RuntimeError(
+            f"Mongo URI appears invalid (must start with mongodb:// or mongodb+srv://). source={mongo_uri_source}"
+        )
+
+    logger.info(
+        "Resolved backend Mongo URI source=%s path=%s uri=%s",
+        mongo_uri_source,
+        file_path,
+        _sanitize_mongo_uri_for_logs(mongo_uri),
+    )
 
     sampling_interval = int(os.getenv("METRICS_SAMPLING_INTERVAL_SEC", "5"))
     retention_days = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
@@ -99,4 +145,6 @@ def load_config() -> BackendConfig:
         alert_event_cooldown_sec=alert_event_cooldown,
         recs_default_ttl_days=recs_default_ttl_days,
         recs_max_return=recs_max_return,
+        mongo_uri_source=mongo_uri_source,
+        mongo_db_connection_path=file_path,
     )

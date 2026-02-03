@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
+from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,27 @@ class MongoManager:
                 return
             # MongoClient is thread-safe and manages internal pooling.
             self._app_client = MongoClient(self._app_mongo_uri, connect=True)
+
+    # PUBLIC_INTERFACE
+    def ping(self, timeout_ms: int = 1500) -> bool:
+        """
+        Ping the configured MongoDB to validate connectivity.
+
+        This is used by startup validation and the connectivity-check endpoint.
+        """
+        try:
+            if self._app_client is None:
+                # Ensure client exists before pinging
+                self.connect_app()
+            assert self._app_client is not None
+            self._app_client.admin.command("ping", maxTimeMS=int(max(250, timeout_ms)))
+            return True
+        except PyMongoError:
+            logger.exception("Mongo ping failed (PyMongoError)")
+            return False
+        except Exception:
+            logger.exception("Mongo ping failed (unexpected)")
+            return False
 
     def close(self) -> None:
         """Close app and target Mongo clients."""
