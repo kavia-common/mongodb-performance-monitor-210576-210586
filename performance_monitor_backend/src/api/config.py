@@ -15,6 +15,10 @@ class BackendConfig:
     metrics_sampling_interval_sec: int
     metrics_retention_days: int
 
+    # Alerts engine tuning
+    alert_eval_interval_sec: int
+    alert_event_cooldown_sec: int
+
     # Recommendations engine tuning
     recs_default_ttl_days: int
     recs_max_return: int
@@ -71,11 +75,18 @@ def load_config() -> BackendConfig:
     sampling_interval = int(os.getenv("METRICS_SAMPLING_INTERVAL_SEC", "5"))
     retention_days = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
 
+    alert_eval_interval = int(os.getenv("ALERT_EVAL_INTERVAL_SEC", "5"))
+    alert_event_cooldown = int(os.getenv("ALERT_EVENT_COOLDOWN_SEC", "60"))
+
     recs_default_ttl_days = int(os.getenv("RECS_DEFAULT_TTL_DAYS", "14"))
     recs_max_return = int(os.getenv("RECS_MAX_RETURN", "50"))
 
     sampling_interval = max(1, sampling_interval)
     retention_days = max(1, retention_days)
+
+    # Alerts: keep evaluation reasonably frequent, cooldown not too small.
+    alert_eval_interval = max(1, alert_eval_interval)
+    alert_event_cooldown = max(0, alert_event_cooldown)
 
     recs_default_ttl_days = max(1, recs_default_ttl_days)
     recs_max_return = max(1, min(500, recs_max_return))
@@ -84,6 +95,8 @@ def load_config() -> BackendConfig:
         mongo_uri=mongo_uri,
         metrics_sampling_interval_sec=sampling_interval,
         metrics_retention_days=retention_days,
+        alert_eval_interval_sec=alert_eval_interval,
+        alert_event_cooldown_sec=alert_event_cooldown,
         recs_default_ttl_days=recs_default_ttl_days,
         recs_max_return=recs_max_return,
     )

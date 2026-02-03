@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.config import load_config
 from src.api.routers import alerts, health, instances, metrics, recommendations
+from src.api.services.alerts_evaluator import alerts_evaluator_loop
 from src.api.services.metrics_sampler import sampler_loop
 from src.api.state import get_state, init_state
 
@@ -40,7 +41,7 @@ init_state(app, load_config())
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    """Startup hook: connect to Mongo, ensure indexes, and start background metrics sampler."""
+    """Startup hook: connect to Mongo, ensure indexes, and start background sampler + alerts evaluator."""
     state = get_state(app)
     state.mongo.connect_app()
     state.mongo.init_indexes()
@@ -48,20 +49,34 @@ async def _on_startup() -> None:
     app.state._sampler_shutdown = asyncio.Event()
     state.sampler_task = asyncio.create_task(sampler_loop(state, app.state._sampler_shutdown))
 
+    app.state._alerts_shutdown = asyncio.Event()
+    state.alerts_task = asyncio.create_task(alerts_evaluator_loop(state, app.state._alerts_shutdown))
+
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    """Shutdown hook: stop sampler and close Mongo connections."""
+    """Shutdown hook: stop sampler/evaluator and close Mongo connections."""
     state = get_state(app)
-    shutdown_event = getattr(app.state, "_sampler_shutdown", None)
-    if shutdown_event is not None:
-        shutdown_event.set()
-    task = state.sampler_task
-    if task is not None:
+
+    sampler_shutdown = getattr(app.state, "_sampler_shutdown", None)
+    if sampler_shutdown is not None:
+        sampler_shutdown.set()
+    sampler_task = state.sampler_task
+    if sampler_task is not None:
         try:
-            await asyncio.wait_for(task, timeout=5.0)
+            await asyncio.wait_for(sampler_task, timeout=5.0)
         except Exception:
             logger.exception("Error stopping sampler task")
+
+    alerts_shutdown = getattr(app.state, "_alerts_shutdown", None)
+    if alerts_shutdown is not None:
+        alerts_shutdown.set()
+    alerts_task = state.alerts_task
+    if alerts_task is not None:
+        try:
+            await asyncio.wait_for(alerts_task, timeout=5.0)
+        except Exception:
+            logger.exception("Error stopping alerts evaluator task")
 
     state.mongo.close()
 

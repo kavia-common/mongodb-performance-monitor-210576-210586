@@ -21,7 +21,14 @@ class MongoCollections:
 
     instances: Collection
     metrics_samples: Collection
+
+    # Legacy/stub collection used by earlier UI wiring (kept intact).
     alerts: Collection
+
+    # New alerts engine collections.
+    alert_rules: Collection
+    alert_events: Collection
+
     recommendations: Collection
 
 
@@ -78,6 +85,8 @@ class MongoManager:
             instances=db["instances"],
             metrics_samples=db["metrics_samples"],
             alerts=db["alerts"],
+            alert_rules=db["alert_rules"],
+            alert_events=db["alert_events"],
             recommendations=db["recommendations"],
         )
 
@@ -86,10 +95,26 @@ class MongoManager:
         cols = self.collections()
         # metrics_samples on {instanceId:1, ts:-1}
         cols.metrics_samples.create_index([("instanceId", ASCENDING), ("ts", DESCENDING)], name="idx_instance_ts")
-        # alerts on {instanceId:1, ts:-1}
+        # alerts on {instanceId:1, ts:-1} (legacy)
         cols.alerts.create_index([("instanceId", ASCENDING), ("ts", DESCENDING)], name="idx_alerts_instance_ts")
         # instances unique by id for stable lookups
         cols.instances.create_index([("id", ASCENDING)], unique=True, name="idx_instances_id")
+
+        # Alert rules indexes
+        cols.alert_rules.create_index([("enabled", ASCENDING)], name="idx_alert_rules_enabled")
+        cols.alert_rules.create_index([("type", ASCENDING)], name="idx_alert_rules_type")
+        cols.alert_rules.create_index([("instanceScope", ASCENDING)], name="idx_alert_rules_instanceScope")
+        cols.alert_rules.create_index([("createdAt", DESCENDING)], name="idx_alert_rules_createdAt_desc")
+
+        # Alert events indexes (per requirement)
+        cols.alert_events.create_index([("instanceId", ASCENDING)], name="idx_alert_events_instance")
+        cols.alert_events.create_index([("ruleId", ASCENDING)], name="idx_alert_events_rule")
+        cols.alert_events.create_index([("status", ASCENDING)], name="idx_alert_events_status")
+        cols.alert_events.create_index([("createdAt", DESCENDING)], name="idx_alert_events_createdAt_desc")
+        cols.alert_events.create_index(
+            [("instanceId", ASCENDING), ("ruleId", ASCENDING), ("createdAt", DESCENDING)],
+            name="idx_alert_events_instance_rule_createdAt_desc",
+        )
 
         # recommendations indexes
         cols.recommendations.create_index([("instanceId", ASCENDING)], name="idx_recs_instance")

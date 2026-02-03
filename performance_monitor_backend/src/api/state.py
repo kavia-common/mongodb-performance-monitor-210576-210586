@@ -16,6 +16,7 @@ class AppState:
     config: BackendConfig
     mongo: MongoManager
     sampler_task: Optional[object] = None  # asyncio.Task, but kept loose to avoid import cycles
+    alerts_task: Optional[object] = None  # asyncio.Task, but kept loose to avoid import cycles
 
 
 # PUBLIC_INTERFACE
